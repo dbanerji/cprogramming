@@ -3,134 +3,145 @@
 #include <limits.h>
 #include <pthread.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <linux/in.h>
+
+
 
 //function declaration
-int validate();
-void *writetofile(void *params);
+void *requesthandler(void *args);
 
-struct input
+typedef struct
 {
-    char *data;
-    int datalength;
-};
+    int sock;
+    struct sockaddr address;
+    int addr_len;
+} connection_t; 
 
-int main()
-{
 
-    //stores size of the file
-    int size;
+int main(int argc, char * argv[]){
 
-    struct input params;
-    //stores the data in the form of a dynamic array of characters
-    char *data;
+    int sock = -1;
+    struct sockaddr_in address;
+    int port;
+    connection_t * connection;
+    pthread_t thread_id;
 
-    int index = 0;
-
-    //size of the file after exiting from the terminal using the '$' character
-    int actual_size = 0;
-
-    //function call that checks if the size is in valid range
-    size = validate();
-
-    //malloc is used for dynamic memory allocation a dynamic array
-    data = malloc(size * sizeof(char));
-
-    printf("Enter the data and press ($ and Enter) to exit:\n");
-
-    /*Loop runs for the condition where both the length is less than that specified by the user
-    and the character entered in stdin is not a $*/
-    while (index < size && data[index - 1] != '$')
+	   /* check for command line arguments */
+    if (argc != 2)
     {
-
-        scanf("%c", &data[index]);
-        index++;
-
-        //keeps a count of the actual size of data written to the file
-        actual_size++;
+        fprintf(stderr, "usage: %s port\n", argv[0]);
+        return -1;
     }
 
-    params.datalength = actual_size;
-    params.data = data;
-
-    pthread_t tid;
-    pthread_create(&tid, NULL, writetofile, (void *)&params);
-    pthread_join(tid, NULL);
-
-    return 0;
-}
-
-/* 
-This function validates range of integer datatype
-@return: int - valid size
-*/
-int validate()
-{
-
-    //Flag is used to validate the input type
-    int size, flag = 0;
-
-    while (1)
+    /* obtain port number */
+    if (sscanf(argv[1], "%d", &port) <= 0)
     {
-        printf("Enter the length of characters to write:\n");
+        fprintf(stderr, "%s: error: wrong parameter: port\n", argv[0]);
+        return -2;
+    }
 
-        //stores size of the file from the stdin
-        flag = scanf("%d", &size);
+    /* create socket */
+    sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock <= 0)
+    {
+        fprintf(stderr, "%s: error: cannot create socket\n", argv[0]);
+        return -3;
+    }
 
-        //This is used to flush the input buffer instead of using the unpredictable nature of fflush(stdin)
-        while ((getchar()) != '\n')
-            ;
+    /* bind socket to port */
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(port);
+    if (bind(sock, (struct sockaddr *)&address, sizeof(struct sockaddr_in)) < 0)
+    {
+        fprintf(stderr, "%s: error: cannot bind socket to port %d\n", argv[0], port);
+        return -4;
+    }   
 
-        //checks if size is not 0, or negative or greater than maximum limit
-        if (size >= 1 && size <= INT_MAX && flag == 1)
+    /* listen on port */
+    if (listen(sock, 4) < 0)
+    {
+        fprintf(stderr, "%s: error: cannot listen on port\n", argv[0]);
+        return -5;
+    }
+
+        printf("%s: ready and listening\n", argv[0]);
+
+        while (1)
+    {
+        /* accept incoming connections */
+        connection = (connection_t *)malloc(sizeof(connection_t));
+        connection->sock = accept(sock, &connection->address, &connection->addr_len);
+        if (connection->sock <= 0)
         {
-            return size;
+            free(connection);
         }
-
         else
         {
-            printf("Input is out of range! Please try again.\n");
+            /* start a new thread but do not wait for it */
+            pthread_create(&thread_id, NULL, requesthandler, (void *)connection);
+            pthread_detach(thread_id);
         }
     }
+
+     return 0;
 }
 
-/* 
-This function writes data to a file
-@param1: data - Character Array that holds the data
-@param2: size - Integer which holds length of the array
-@return: void
-*/
-void *writetofile(void *args)
-{
 
-    char threadid[256];
-    int thread = pthread_self();
-    sprintf(threadid, "%d", thread);
-    char filename[] = "newfile";
-    strcat(filename, threadid);
-    strcat(filename, ".txt");
 
-    //file pointer
-    FILE *fptr;
+void *requesthandler(void *args){
+    
+    char *data;
+    int size;
+    
+    connection_t * conn;
+    long address=0;
 
-    //to open/create a file named "newfile.txt" in the write mode
-    fopen_s(&fptr, filename, "w");
+    if(!args) pthread_exit(0);
 
-    //checks if the fopen function returns a null pointer
-    if (fptr == NULL)
-    {
+    conn = (connection_t *) args;
+    
+    printf("Enter the length of characters to write:\n");
+    read(conn -> sock, &size, sizeof(int));
+
+    if(size > 0 && size < INT_MAX){
+        
+        address = (long)((struct sockaddr_in *)&conn->address)->sin_addr.s_addr;
+        data =  (char *)malloc((size+1)*sizeof(char));
+        data[size] = 0;
+        
+        printf("Enter the data\n");
+        read(conn->sock, data, size);
+        
+        //file pointer
+        FILE *fptr;  
+        
+        //to open/create a file named "newfile.txt" in the write mode
+        fptr=fopen("newfile.txt", "w");
+
+        //checks if the fopen function returns a null pointer   
+        if(fptr == NULL){                     
         printf("Error opening the file..");
         exit(1);
+        }
+        
+        fwrite(data, sizeof(char), (size-1), fptr);  
+
+        printf("Data successfully written into the file");
+        
+        fclose(fptr);
+        free(data);
+
+
     }
+    close(conn->sock);
+    free(conn);
+    pthread_exit(0);
 
-    /*the fwrite function is used to write a block of data to 
-    location pointed by the file pointer in the file*/
-    fwrite(((struct input *)args)->data, sizeof(char), (((struct input *)args)->datalength) - 1, fptr);
 
-    printf("Data successfully written into the file");
-
-    //to close the file and flush the buffers
-    fclose(fptr);
-
-    //deallocates the memory previously pointed to by the dynamic array
-    free(((struct input *)args)->data);
 }
+
+
+
+
